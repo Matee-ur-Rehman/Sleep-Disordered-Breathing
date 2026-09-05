@@ -293,7 +293,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data_dir", type=str, required=True,
                          help="Directory containing downloaded Sleep-EDF SC files.")
-    parser.add_argument("--out", type=str, default="./data/processed/sleep_edf_sc.npz")
+    parser.add_argument("--out", type=str, default="./data/processed/sleep_edf_sc",
+                         help="Output DIRECTORY (not a single file) for sharded .npz output. "
+                              "One shard per successfully processed recording is written here, "
+                              "plus a manifest.npz listing all shards.")
     parser.add_argument("--limit", type=int, default=None,
                          help="Optional: only process the first N PSG/hyp pairs (for a quick test run).")
     args = parser.parse_args()
@@ -308,16 +311,35 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
-    all_X, all_y, all_subjects = [], [], []
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # [FIX, replaces earlier in-memory-concatenate design]
+    # The original version accumulated every recording's array in a Python
+    # list and concatenated them all into ONE array at the end. For the full
+    # 153-recording Sleep-EDF SC set this required ~5.7 GiB in a single
+    # contiguous allocation (plus a temporary ~2x spike during concatenate),
+    # which crashed on a normal desktop/laptop RAM budget - confirmed
+    # empirically (numpy._core._exceptions._ArrayMemoryError at the final
+    # concatenate step, plus a cascade of per-file allocation failures
+    # leading up to it from accumulated memory pressure).
+    # Fix: write each recording's array to its own small shard file on disk
+    # IMMEDIATELY after processing it, then let Python garbage-collect it
+    # before moving to the next recording. A lightweight manifest.npz records
+    # which shards exist and in what order, without ever holding more than
+    # one recording's data in memory at a time.
+    shard_paths = []
+    total_epochs = 0
     channel_order_ref = None
+    n_success, n_failed = 0, 0
 
     for psg_path in psg_files:
-        # Sleep-EDF SC naming: SC4ssNEO-PSG.edf paired with SC4ssNEC-Hypnogram.edf
         stem = psg_path.name.replace("-PSG.edf", "")
-        subject_night_prefix = stem[:6]  # e.g. "SC4001"
+        subject_night_prefix = stem[:6]
         candidates = list(psg_path.parent.glob(f"{subject_night_prefix}*Hypnogram.edf"))
         if not candidates:
             print(f"  WARNING: no matching hypnogram for {psg_path.name}, skipping.")
+            n_failed += 1
             continue
         hyp_path = candidates[0]
 
@@ -325,39 +347,59 @@ def main():
             X, y, channel_order = process_one_recording(str(psg_path), str(hyp_path))
         except Exception as e:
             print(f"  ERROR processing {psg_path.name}: {e}")
+            n_failed += 1
             continue
 
         if X.shape[0] == 0:
+            n_failed += 1
             continue
 
         if channel_order_ref is None:
             channel_order_ref = channel_order
         elif channel_order != channel_order_ref:
             print(f"  WARNING: channel set mismatch for {psg_path.name} "
-                  f"({channel_order} vs {channel_order_ref}); skipping to keep array shapes consistent.")
+                  f"({channel_order} vs {channel_order_ref}); skipping to keep shards consistent.")
+            n_failed += 1
             continue
 
-        subject_id = subject_night_prefix[3:5]  # digits after "SC4"
-        all_X.append(X)
-        all_y.append(y)
-        all_subjects.extend([subject_id] * X.shape[0])
+        # [FIX] float32 instead of float64: halves memory footprint. Z-scored
+        # data (mean 0, std 1 by construction) does not need float64
+        # precision; float32's ~7 significant digits is far more than enough.
+        X = X.astype(np.float32)
 
-    if not all_X:
+        subject_id = subject_night_prefix[3:5]
+        shard_name = f"{subject_night_prefix}.npz"
+        shard_path = out_dir / shard_name
+        np.savez_compressed(shard_path, X=X, y=y,
+                             subject=np.array([subject_id] * X.shape[0]))
+
+        shard_paths.append(shard_name)
+        total_epochs += X.shape[0]
+        n_success += 1
+        print(f"  -> wrote shard {shard_name} ({X.shape[0]} epochs)")
+
+        # Explicitly drop references so this recording's memory is freed
+        # before the next iteration allocates a new one.
+        del X, y
+
+    if n_success == 0:
         print("No recordings successfully processed.", file=sys.stderr)
         sys.exit(1)
 
-    X_full = np.concatenate(all_X, axis=0)
-    y_full = np.concatenate(all_y, axis=0)
-    subjects_full = np.array(all_subjects)
+    manifest_path = out_dir / "manifest.npz"
+    np.savez(manifest_path,
+             shard_files=np.array(shard_paths),
+             channels=np.array(channel_order_ref),
+             total_epochs=total_epochs)
 
-    out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(out_path, X=X_full, y=y_full, subjects=subjects_full,
-                         channels=np.array(channel_order_ref))
-
-    print(f"\nSaved {X_full.shape[0]} total epochs, shape {X_full.shape} -> {out_path}")
+    print(f"\nDone. {n_success} recordings processed successfully, {n_failed} failed/skipped.")
+    print(f"Total epochs across all shards: {total_epochs}")
     print(f"Channels used: {channel_order_ref}")
-    print(f"Unique subjects: {len(set(subjects_full))}")
+    print(f"Shards + manifest written to: {out_dir}")
+    print("\nNOTE: output is now a DIRECTORY of per-recording shard files, not one "
+          "single .npz. Use scripts/check_label_distribution.py (updated) or the "
+          "future dataset loader to read across all shards without loading "
+          "everything into RAM at once.")
 
 
 if __name__ == "__main__":
