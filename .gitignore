@@ -1,0 +1,43 @@
+# --- Datasets & processed data: NEVER commit these ---
+data/
+!data/.gitkeep
+*.npz
+*.npy
+*.log
+download_log.txt
+*_log.txt
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Virtual environments ---
+venv/
+.venv/
+env/
+ENV/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- Model checkpoints / training artifacts ---
+checkpoints/
+runs/
+*.pt
+*.pth
+*.ckpt
+
+# --- OS / editor cruft ---
+.DS_Store
+Thumbs.db
+.vscode/
+*.swp
+
+# --- MNE's own data cache dir ---
+mne_data/
+physionet-sleep-data/
