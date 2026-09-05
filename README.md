@@ -7,10 +7,10 @@ https://doi.org/10.1038/s41598-026-56111-6
 ## Where we are
 
 - [x] Project scaffold, config with all hyperparameters tagged [PAPER]/[ASSUMED]/[DERIVED]
-- [x] Sleep-EDF (Sleep Cassette) download script (MNE-based, verified subject indexing: 78 subjects, indices 0-82 excluding {39,68,69,78,79})
-- [x] Preprocessing pipeline: load, clean, z-score normalize, epoch, outlier-exclude
-- [x] Unit-tested the array-processing logic (normalization, outlier exclusion, noise injection) on synthetic data at realistic scale
-- [ ] NOT yet run against real downloaded data (requires your machine's internet access — this sandbox has none)
+- [x] Sleep-EDF (Sleep Cassette) download script (MNE-based, verified subject indexing: 78 subjects, indices 0-82 excluding {39,68,69,78,79}; also verified AWS S3 mirror as a faster/more reliable alternative to PhysioNet's own server)
+- [x] Preprocessing pipeline: load, clean, z-score normalize, epoch, outlier-exclude, wake-trim — run successfully on the FULL 78-subject / 153-recording dataset (185,641 total epochs, 0 failures)
+- [x] Unit-tested the array-processing logic (normalization, outlier exclusion, wake-trimming, noise injection) on synthetic data at realistic scale
+- [x] Validated final stage distribution against an independent published reproduction using the same dataset/conventions — confirmed our pipeline is standard-practice-consistent (see item 18 in ambiguity list below)
 - [ ] SPRNet model (Conv branches + BiLSTM + attention + dual heads) — not started
 - [ ] IDSSA (transition priors + multi-objective loss) — not started
 - [ ] Baselines (SVM/CNN/LSTM/ResNet/Transformer/MobileNetV2) — not started
@@ -60,6 +60,12 @@ match Table 1 of the paper (W: 30.1%, N1: 8.9%, N2: 38.4%, N3: 12.5%, REM:
 15. **NEW**: common resampling rate for multimodal alignment — paper doesn't state one; assumed 100Hz (matches Sleep-EDF's fastest native channels)
 16. **NEW**: whether Gaussian noise injection (Eq., Sec 4.2.2) applies to train only or all splits — assumed train-only, to keep val/test evaluation deterministic and comparable across runs
 17. **NEW**: paper states "78 subjects, 200 recordings" for Sleep-EDF in Table 1, but the actual Sleep Cassette release is 78 subjects / 153 recordings — this number does not appear to be achievable with any known Sleep-EDF release; treated as a likely error in the manuscript, we proceed with the real 153-recording set
+18. **NEW, EMPIRICALLY CONFIRMED AND RESOLVED**: wake-period trimming. Sleep-EDF SC recordings are continuous ~20-24h captures with long wake padding before/after the actual sleep episode. Without trimming, our own test batch showed W = 68.7% of all epochs. Applied a 30-minute wake buffer (config.WAKE_TRIM_MINUTES), matching the standard convention (Supratak et al., DeepSleepNet, 2017, and widely reused since). On the FULL 78-subject dataset (185,641 epochs after outlier removal, before trim; final distribution below), this produces:
+    - W: 33.4%, N1: 11.2%, N2: 36.3%, N3: 6.7%, REM: 12.5%
+    - vs. paper's Table 1: W: 30.1%, N1: 8.9%, N2: 38.4%, N3: 12.5%, REM: 10.1%
+    - Investigated the N3 gap specifically (paper reports 12.5%, ours is 6.7%, roughly half). Hypothesis tested and REFUTED: checked whether our amplitude-outlier filter was disproportionately excluding N3 epochs (N3/slow-wave sleep is naturally higher-amplitude, so this seemed plausible) - empirically, N3 makes up only 3.6% of all excluded epochs, LESS than its ~6.7% share of the final dataset, so the outlier filter is not the cause; W dominates exclusions (69%), consistent with wake epochs naturally containing the most movement/artifact noise.
+    - Cross-checked against an independently published reproduction using the same dataset, same 30-min trim, same N3+N4->N3 merge convention (arxiv.org/pdf/2211.13005, "A CNN-Transformer Deep Learning Model for Real-time Sleep Stage Classification"): they report W 30.14%, N1 10.64%, N2 36.83%, **N3 8.26%**, REM 14.13% - much closer to OUR numbers (especially N3) than to the target paper's Table 1. This is strong evidence our pipeline is behaving correctly per standard practice, and that the target paper's own reported stage distribution (particularly N3=12.5%) is the outlier, not our preprocessing.
+    - **Conclusion: not chasing this further.** Given the other confirmed inconsistencies in this paper's self-reported numbers (mismatched reference list items 1-16, "200 recordings" claim that matches no real dataset release), we treat our pipeline's output as correctly following standard, literature-consistent Sleep-EDF preprocessing, and proceed without further tuning to force an exact match to Table 1.
 
 ## Immediate next step for you
 

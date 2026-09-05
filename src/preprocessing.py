@@ -176,7 +176,8 @@ def build_epoch_array(data_norm, sfreq, epoch_labels, channels_order):
         candidates.append((data_norm[:, start:end], stage))
 
     if not candidates:
-        return np.empty((0, data_norm.shape[0], n_samples_per_epoch)), np.empty((0,), dtype=int), 0
+        return (np.empty((0, data_norm.shape[0], n_samples_per_epoch)), np.empty((0,), dtype=int),
+                0, {})
 
     n_channels = data_norm.shape[0]
     rms_per_epoch = np.array([
@@ -192,19 +193,24 @@ def build_epoch_array(data_norm, sfreq, epoch_labels, channels_order):
 
     X_list, y_list = [], []
     excluded = 0
+    excluded_by_stage = {}  # [DIAGNOSTIC] track which stages get excluded, to
+                              # check whether the outlier filter is biased
+                              # against naturally high-amplitude stages (esp. N3)
     for (seg, stage), outlier in zip(candidates, is_outlier):
         if outlier:
             excluded += 1
+            excluded_by_stage[stage] = excluded_by_stage.get(stage, 0) + 1
             continue
         X_list.append(seg)
         y_list.append(STAGE_TO_IDX[stage])
 
     if not X_list:
-        return np.empty((0, n_channels, n_samples_per_epoch)), np.empty((0,), dtype=int), excluded
+        return (np.empty((0, n_channels, n_samples_per_epoch)), np.empty((0,), dtype=int),
+                excluded, excluded_by_stage)
 
     X = np.stack(X_list, axis=0)
     y = np.array(y_list, dtype=int)
-    return X, y, excluded
+    return X, y, excluded, excluded_by_stage
 
 
 def trim_wake_padding(X, y, buffer_epochs=WAKE_TRIM_EPOCHS):
@@ -275,7 +281,7 @@ def process_one_recording(psg_path: str, hyp_path: str, verbose: bool = True):
         warnings.warn(f"No usable annotated epochs in {hyp_path}")
 
     data_norm, means, stds = clean_and_normalize(raw, channel_order)
-    X, y, excluded = build_epoch_array(data_norm, RESAMPLE_HZ, epoch_labels, channel_order)
+    X, y, excluded, excluded_by_stage = build_epoch_array(data_norm, RESAMPLE_HZ, epoch_labels, channel_order)
 
     n_before_trim = X.shape[0]
     X, y = trim_wake_padding(X, y)
@@ -286,7 +292,7 @@ def process_one_recording(psg_path: str, hyp_path: str, verbose: bool = True):
               f"({excluded} excluded), {n_trimmed} trimmed as excess wake padding, "
               f"{X.shape[0]} final epochs kept. channels={channel_order}")
 
-    return X, y, channel_order
+    return X, y, channel_order, excluded_by_stage
 
 
 def main():
@@ -332,6 +338,7 @@ def main():
     total_epochs = 0
     channel_order_ref = None
     n_success, n_failed = 0, 0
+    exclusion_by_stage_total = {}  # [DIAGNOSTIC] aggregate across all recordings
 
     for psg_path in psg_files:
         stem = psg_path.name.replace("-PSG.edf", "")
@@ -344,11 +351,14 @@ def main():
         hyp_path = candidates[0]
 
         try:
-            X, y, channel_order = process_one_recording(str(psg_path), str(hyp_path))
+            X, y, channel_order, excluded_by_stage = process_one_recording(str(psg_path), str(hyp_path))
         except Exception as e:
             print(f"  ERROR processing {psg_path.name}: {e}")
             n_failed += 1
             continue
+
+        for stage, cnt in excluded_by_stage.items():
+            exclusion_by_stage_total[stage] = exclusion_by_stage_total.get(stage, 0) + cnt
 
         if X.shape[0] == 0:
             n_failed += 1
@@ -396,6 +406,24 @@ def main():
     print(f"Total epochs across all shards: {total_epochs}")
     print(f"Channels used: {channel_order_ref}")
     print(f"Shards + manifest written to: {out_dir}")
+
+    # [DIAGNOSTIC] Print which stages were disproportionately excluded by the
+    # amplitude-outlier filter, to check the hypothesis that N3 (naturally
+    # high-amplitude slow-wave sleep) is being over-excluded as a false
+    # "outlier" rather than genuine sensor artifacts.
+    total_excluded = sum(exclusion_by_stage_total.values())
+    if total_excluded > 0:
+        print(f"\nOutlier-exclusion breakdown by original sleep stage "
+              f"({total_excluded} total epochs excluded):")
+        for stage in ["W", "N1", "N2", "N3", "REM"]:
+            cnt = exclusion_by_stage_total.get(stage, 0)
+            pct = 100 * cnt / total_excluded if total_excluded else 0
+            print(f"  {stage:4s}: {cnt:6d}  ({pct:5.1f}% of all exclusions)")
+        print("If one stage (especially N3) makes up a share of exclusions far "
+              "above its share of the overall dataset, the amplitude-outlier "
+              "filter may be biased against that stage's naturally higher "
+              "signal amplitude rather than catching genuine artifacts.")
+
     print("\nNOTE: output is now a DIRECTORY of per-recording shard files, not one "
           "single .npz. Use scripts/check_label_distribution.py (updated) or the "
           "future dataset loader to read across all shards without loading "
