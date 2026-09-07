@@ -205,6 +205,36 @@ class TrainConfig:
     train_frac: float = 0.8           # [PAPER] 8:1:1 subject-wise split
     val_frac: float = 0.1
     test_frac: float = 0.1
+    split_seed: int = 42              # [ASSUMED] paper doesn't give a specific seed
+                                        # for the train/val/test SPLIT ASSIGNMENT
+                                        # itself (as opposed to model init/training
+                                        # seeds, which are separately covered by
+                                        # `seeds` above). We fix one so the split is
+                                        # at least reproducible across our own runs.
+
+
+# ---------------------------------------------------------------------------
+# Sequence construction for BiLSTM input (not specified by the paper at all)
+# ---------------------------------------------------------------------------
+@dataclass
+class SequenceConfig:
+    # [ASSUMED, NEW AMBIGUITY] The paper never states how many consecutive
+    # 30s epochs form one training sequence fed to the BiLSTM. We pick 20
+    # epochs = 10 minutes of context per sequence as a reasonable middle
+    # ground (long enough to give the BiLSTM/attention real temporal context,
+    # short enough to keep batches small on CPU) - not derived from the paper.
+    sequence_length: int = 20
+    # Non-overlapping sequences by default (stride == length), i.e. every
+    # epoch appears in exactly one training sequence. [ASSUMED] An
+    # overlapping-sequence variant (stride < length) is arguably more
+    # paper-literal given their 15s-stride windowing language elsewhere, but
+    # we already resolved that ambiguity in favor of non-overlapping epochs
+    # for consistency (see config.USE_OVERLAP note above) - keeping
+    # non-overlapping sequences here matches that same resolution.
+    sequence_stride: int = 20
+
+
+seq_cfg = SequenceConfig()
 
 
 sprnet_cfg = SPRNetConfig()
