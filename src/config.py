@@ -89,6 +89,27 @@ SLEEP_EDF_CHANNELS = {
                                        # as optional in the loader.
 }
 
+
+def build_channel_to_modality_map(channel_order, channel_groups):
+    """
+    Given the actual list of channel names present in a recording (as saved
+    in manifest.npz's 'channels' field) and a modality->channel-name-list
+    mapping (e.g. SLEEP_EDF_CHANNELS), return a dict {modality: [indices]}
+    giving the row-indices into the data array that belong to each modality.
+
+    This lets the model dynamically build one branch per modality actually
+    present, rather than hardcoding channel counts/positions - important
+    since Sleep-EDF and SHHS will have different channel sets (SHHS adds
+    ECG, Sleep-EDF does not), and even within Sleep-EDF SC not every
+    recording necessarily has every channel (e.g. airflow can be missing).
+    """
+    modality_indices = {}
+    for modality, names in channel_groups.items():
+        idx = [i for i, ch in enumerate(channel_order) if ch in names]
+        if idx:
+            modality_indices[modality] = idx
+    return modality_indices
+
 # SHHS channel names differ by dataset version (shhs1/shhs2 EDFs use varying header
 # labels across the cohort). [ASSUMED - to be confirmed once SHHS access is granted
 # and we can inspect actual EDF headers] Placeholder names below, DO NOT trust yet.
