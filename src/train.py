@@ -217,6 +217,15 @@ def main():
     parser.add_argument("--log_every", type=int, default=20,
                          help="Print progress every N batches, so a slow-but-"
                               "working CPU epoch doesn't look like a hang.")
+    parser.add_argument("--num_workers", type=int, default=2,
+                         help="DataLoader worker processes for parallel shard "
+                              "loading/decompression. 0 = load in the main "
+                              "process (simplest, but slower if I/O-bound).")
+    parser.add_argument("--shard_cache_size", type=int, default=40,
+                         help="How many shards to keep decompressed in memory "
+                              "per DataLoader worker. Larger = fewer repeated "
+                              "decompressions under shuffle=True, at the cost "
+                              "of more RAM (~70MB per cached shard).")
     args = parser.parse_args()
 
     set_seed(args.seed)
@@ -239,14 +248,18 @@ def main():
           f"val: {len(split_subjects['val'])} subjects, "
           f"test: {len(split_subjects['test'])} subjects")
 
-    train_ds = SPRNetSequenceDataset(args.shard_dir, splits["train"], channel_order)
-    val_ds = SPRNetSequenceDataset(args.shard_dir, splits["val"], channel_order)
+    train_ds = SPRNetSequenceDataset(args.shard_dir, splits["train"], channel_order,
+                                      cache_size=args.shard_cache_size)
+    val_ds = SPRNetSequenceDataset(args.shard_dir, splits["val"], channel_order,
+                                    cache_size=args.shard_cache_size)
     print(f"  train sequences: {len(train_ds)}, val sequences: {len(val_ds)}")
 
     train_loader = DataLoader(train_ds, batch_size=micro_batch_size, shuffle=True,
-                               collate_fn=sprnet_collate_fn)
+                               collate_fn=sprnet_collate_fn, num_workers=args.num_workers,
+                               persistent_workers=(args.num_workers > 0))
     val_loader = DataLoader(val_ds, batch_size=micro_batch_size, shuffle=False,
-                             collate_fn=sprnet_collate_fn)
+                             collate_fn=sprnet_collate_fn, num_workers=args.num_workers,
+                             persistent_workers=(args.num_workers > 0))
 
     if args.limit_batches:
         # Simple truncation wrapper for fast smoke tests - not used for real runs.

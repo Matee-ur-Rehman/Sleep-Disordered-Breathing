@@ -139,13 +139,27 @@ from torch.utils.data import Dataset
 
 class ShardCache:
     """
-    Tiny LRU-ish cache so that consecutive window lookups from the same
-    shard file (common, since the index is built shard-by-shard) don't
-    repeatedly re-open and decompress the same .npz. Not sophisticated -
-    just keeps the last `max_size` shards' (X, y) arrays in memory.
+    LRU cache so that consecutive window lookups from the same shard file
+    don't repeatedly re-open and decompress the same .npz.
+
+    [FIX, real performance issue found during Kaggle GPU testing] The
+    original default (max_size=4) was far too small once combined with
+    DataLoader shuffle=True: with 153 total shards and only 4 cached, a
+    shuffled epoch touches many different shards per batch, causing constant
+    cache eviction and re-decompression - a CPU-side I/O bottleneck that can
+    dominate wall-clock time even though the model itself is small and the
+    GPU is fast. Confirmed empirically: batches were taking 15-30s each,
+    implausibly slow for a ~1M-parameter model on a T4, strongly suggesting
+    I/O-bound rather than compute-bound behavior.
+
+    Each shard is roughly 70 MB in memory once decompressed (185,641 total
+    epochs x 5 channels x 3000 samples x 4 bytes / 153 shards). A cache of
+    40 shards costs ~2.8 GB RAM, comfortably affordable, and covers roughly
+    a quarter of the full dataset at once - a much more reasonable working
+    set for shuffled access than 4 ever was.
     """
 
-    def __init__(self, shard_dir, max_size=4):
+    def __init__(self, shard_dir, max_size=40):
         self.shard_dir = Path(shard_dir)
         self.max_size = max_size
         self._cache = {}   # shard_file -> (X, y)
@@ -189,7 +203,7 @@ class SPRNetSequenceDataset(Dataset):
                  channel_groups=SLEEP_EDF_CHANNELS,
                  sequence_length=seq_cfg.sequence_length,
                  sequence_stride=seq_cfg.sequence_stride,
-                 cache_size=4):
+                 cache_size=40):
         self.shard_dir = Path(shard_dir)
         self.channel_order = channel_order
         self.modality_indices = build_channel_to_modality_map(channel_order, channel_groups)
