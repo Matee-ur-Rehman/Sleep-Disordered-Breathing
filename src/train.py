@@ -271,7 +271,7 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     # enabled=False on CPU is a safe no-op (plain backward/step, no scaling) -
     # this code path doesn't change CPU behavior at all.
-    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda"))
+    scaler = torch.amp.GradScaler(device.type, enabled=(device.type == "cuda"))
 
     checkpoint_dir = Path(args.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
